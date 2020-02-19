@@ -1,14 +1,24 @@
+#!/usr/bin/env python3
+
+import aiohttp
+import asyncio
 from bs4 import BeautifulSoup
-import requests
+import re
 from urllib.parse import urlsplit
 
 '''
 2020-02-08 Tim DiLauro
-Scrape episode names
+Scrape episode data from Wikipedia "episode" pages
 '''
 
 
-def main():
+async def main():
+
+    episodes = []
+
+    def episode_callback(episode):
+        episodes.append(episode)
+
     show_season_urls = [
         'https://en.wikipedia.org/wiki/Star_Trek:_Discovery_(season_1)',
         'https://en.wikipedia.org/wiki/The_Big_Bang_Theory_(season_1)',
@@ -25,30 +35,53 @@ def main():
         'https://en.wikipedia.org/wiki/The_Big_Bang_Theory_(season_12)',
     ]
 
-    for url in show_season_urls:
-        title = urlsplit(url).path.split('/')[-1].replace('_', ' ').strip()
-        print("\nTitle: {}".format(title))
-        handle_season(url)
+    pending = [asyncio.create_task(process_url(url, episode_callback)) for url in show_season_urls]
+    await asyncio.gather(*pending, return_exceptions=True)
+
+    # episodes.sort(key=lambda e: (strip_season(e[0]), e[1]))
+    for episode in sorted(episodes, key=lambda e: (strip_season(e[0]), e[1])):
+        print(episode)
 
 
-def handle_season(wp_url):
-    page = requests.get(wp_url)
-    soup = BeautifulSoup(page.content, 'html.parser')
+async def process_url(url, callback):
+    page = await get_episode_page(url)
+    episodes = process_page(page, url)
+    for episode in episodes:
+        callback(episode)
+
+
+async def get_episode_page(url):
+    async with aiohttp.ClientSession() as session:
+        async with session.get(url) as response:
+            page = await response.text()
+        return page
+
+
+def process_page(page, url):
+    soup = BeautifulSoup(page, 'html.parser')
 
     episode_tables = soup.find_all('table', 'wikiepisodetable')
     episode_table_count = len(episode_tables)
     if episode_table_count != 1:
-        print("Unexpected number of episode tables for {}. Found {}, but should be 1.".format(wp_url,
+        print("Unexpected number of episode tables for {}. Found {}, but should be 1.".format(url,
                                                                                               episode_table_count))
         exit(1)
 
     table = episode_tables[0]
-    episodes = table.find_all('tr', 'vevent')
+    episode_rows = table.find_all('tr', 'vevent')
 
-    for episode in episodes:
-        number_overall = strip_title(episode.th.get_text())
-        columns = [strip_title(column.get_text()) for column in episode.find_all('td')]
-        print(number_overall, columns)
+    title = urlsplit(url).path.split('/')[-1].replace('_', ' ').strip()
+    print("Title: {}".format(title))
+
+    episodes = [episode_properties(title, row) for row in episode_rows]
+    return episodes
+
+
+def episode_properties(title, episode):
+    overall_episode_number = int(strip_title(episode.th.get_text()))
+    columns = [strip_title(column.get_text()) for column in episode.find_all('td')]
+    season_episode_number = int(columns.pop(0))
+    return [title, overall_episode_number, season_episode_number, *columns]
 
 
 def strip_title(title):
@@ -56,5 +89,13 @@ def strip_title(title):
     return title.strip().strip("'\"").strip()
 
 
+def strip_season(title, pattern=re.compile(r'(?i) \(season\s+\d+\)')):
+    stripped_title = re.sub(pattern, '', title)
+    return stripped_title
+
+
 if __name__ == "__main__":
-    main()
+    # main()
+    async_event_loop = asyncio.get_event_loop()
+    async_event_loop.run_until_complete(main())
+    async_event_loop.stop()

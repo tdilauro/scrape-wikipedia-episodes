@@ -7,7 +7,8 @@ verify_ssl = true
 
 [packages]
 beautifulsoup4 = "*"
-requests = "*"
+aiohttp = "*"
+aiodns = "*"
 
 [requires]
-python_version = "3.7"
+python_version = ">=3.5"
