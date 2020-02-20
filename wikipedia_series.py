@@ -6,9 +6,9 @@ import re
 import requests
 
 
-_program_pattern = re.compile(r'\A(?P<program>.*?)\s+\((?P<group_type>.*?)(\s+(?P<group_num>\d+))?\)\Z')
-_program_subtitle_pattern = re.compile(r'\A\((?P<group_type>.*?)(\s+(?P<group_num>\d+))?\)\Z')
-_title_pattern = re.compile(r'\A(?P<quote>[\'\"])(?P<value>.*)(?P=quote)\Z')
+_program_pattern = re.compile(r'\A(?P<program>.*?)\s+\((?P<series_type>.*?)(\s+(?P<series_num>\d+))?\)\Z')
+_program_subtitle_pattern = re.compile(r'\A\((?P<series_type>.*?)(\s+(?P<series_num>\d+))?\)\Z')
+_quoted_title_pattern = re.compile(r'\A(?P<quote>[\'\"])(?P<value>.*)(?P=quote)\Z')
 
 
 class WikipediaSeries(object):
@@ -16,16 +16,16 @@ class WikipediaSeries(object):
     def __init__(self, html):
         soup = BeautifulSoup(html, 'html.parser')
         properties = get_series_properties(soup)
-        self.program = properties['title']
+        self.name = properties['title']
         self.subtitle = properties['subtitle']
-        self.full_title = properties['full_title']
-        self.group_type = properties.get('group_type')
-        self.group_num = properties.get('group_num')
+        self.full_name = properties['full_name']
+        self.series_type = properties.get('series_type')
+        self.series_num = properties.get('series_num')
         episodes = extract_episodes(soup)
-        self.episodes = [Episode(program=self.program, **e) for e in episodes]
+        self.episodes = [Episode(program=self.name, **e) for e in episodes]
 
     def __repr__(self):
-        return '{}("{}")'.format(self.__class__.__name__, self.full_title)
+        return '{}("{}" ({} episodes))'.format(self.__class__.__name__, self.full_name, len(self.episodes))
 
     def as_json_obj(self):
         json_object = {k: v for k, v in self.__dict__.items() if k != 'episodes' }
@@ -56,12 +56,12 @@ async def get_episode_page_html(url):
 def get_series_properties(soup):
     title_element = soup.select('#firstHeading')[0]
     title = title_element.i.get_text()
-    full_title = title_element.get_text()
-    subtitle = full_title.replace(title, '', 1).strip()
+    full_name = title_element.get_text()
+    subtitle = full_name.replace(title, '', 1).strip()
     properties = parse_program_title(subtitle, pattern=_program_subtitle_pattern)
     properties['title'] = title
     properties['subtitle'] = subtitle
-    properties['full_title'] = full_title
+    properties['full_name'] = full_name
     return properties
 
 
@@ -69,9 +69,9 @@ def parse_program_title(title, pattern=_program_pattern):
     match = re.match(pattern, title)
     if match is not None:
         properties = match.groupdict()
-        group_num = properties.get('group_num', None)
-        if group_num is not None:
-            properties['group_num'] = int(group_num)
+        series_num = properties.get('series_num', None)
+        if series_num is not None:
+            properties['series_num'] = int(series_num)
     else:
         properties = {'title': title}
     return properties
@@ -88,13 +88,18 @@ def extract_episodes(soup):
     column_attrs = heading_attributes(heading_text)
 
     episode_rows = table.find_all('tr', 'vevent')
-    synopsis_rows = [tag.get_text() for tag in table.find_all('td', 'description')]
-    if len(episode_rows) != len(synopsis_rows):
+    synopses = [tag.get_text() for tag in table.find_all('td', 'description')]
+    if len(episode_rows) != len(synopses):
         print("Warning: Number of episode property rows ({}) does not match number of episode description rows ({})"
-              .format(len(episode_rows), len(synopsis_rows)))
+              .format(len(episode_rows), len(synopses)))
 
-    episodes = [[e.th.get_text(), *[col.get_text() for col in e.find_all('td')]] for e in episode_rows]
-    episodes = [episode_properties(episode, column_attrs) for episode in episodes]
+    episodes = []
+    for seq, row in enumerate(episode_rows):
+        attributes = [row.th.get_text(), *[col.get_text() for col in row.find_all('td')]]
+        properties = episode_properties(attributes, column_attrs)
+        properties['description'] = synopses[seq]
+        episodes.append(properties)
+
     return episodes
 
 def episode_properties(episode_columns, attributes):
@@ -108,7 +113,7 @@ def episode_properties(episode_columns, attributes):
             except Exception as e:
                 pass
         elif attribute == 'title':
-            match = re.match(_title_pattern, value)
+            match = re.match(_quoted_title_pattern, value)
             if match is not None:
                 value = match.groupdict()['value']
 
@@ -145,10 +150,7 @@ def heading_attributes(headings):
 
 
 if __name__ == '__main__':
-    import requests
-    p1 = requests.get('https://en.wikipedia.org/wiki/Good_Omens_(TV_series)').content
-    p2 = requests.get('https://en.wikipedia.org/wiki/Star_Trek:_Discovery_(season_1)').content
-    p3 = requests.get('https://en.wikipedia.org/wiki/The_Big_Bang_Theory_(season_1)').content
-    s1 = WikipediaSeries(p1)
-    s2 = WikipediaSeries(p2)
-    s3 = WikipediaSeries(p3)
+    s1 = WikipediaSeries.from_url('https://en.wikipedia.org/wiki/Good_Omens_(TV_series)')
+    s2 = WikipediaSeries.from_url('https://en.wikipedia.org/wiki/Star_Trek:_Discovery_(season_2)')
+    s3 = WikipediaSeries.from_url('https://en.wikipedia.org/wiki/The_Big_Bang_Theory_(season_1)')
+    print(s1, s2, s3, sep="\n")
