@@ -94,16 +94,15 @@ def _episodes_from_table(table):
     heading_cells = table.tbody.tr.find_all('th')
     heading_text = [tag.get_text() for tag in heading_cells]
     column_attrs = _compute_heading_attributes(heading_text)
-    episode_rows = table.find_all('tr', 'vevent')
-    synopses = [tag.get_text() for tag in table.find_all('td', 'description')]
-    if len(episode_rows) != len(synopses):
-        print("Warning: Number of episode property rows ({}) does not match number of episode description rows ({})"
-              .format(len(episode_rows), len(synopses)))
+    episode_rows = table.select('tr.vevent')
     episodes = []
     for seq, row in enumerate(episode_rows):
         attributes = [row.th.get_text(), *[col.get_text() for col in row.find_all('td')]]
         properties = _compute_episode_properties(attributes, column_attrs)
-        properties['description'] = synopses[seq]
+        # assume description, if present, is in row following fielded episode attributes
+        description_elements = row.next_sibling.select('td.description')
+        if description_elements:
+            properties['description'] = description_elements[0].get_text()
         episodes.append(properties)
     return episodes
 
