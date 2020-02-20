@@ -1,34 +1,36 @@
 import aiohttp
 from bs4 import BeautifulSoup
 from episode import Episode
+import functools
 import json
+import operator
 import re
 import requests
 
 
-_program_pattern = re.compile(r'\A(?P<program>.*?)\s+\((?P<series_type>.*?)(\s+(?P<series_num>\d+))?\)\Z')
-_program_subtitle_pattern = re.compile(r'\A\((?P<series_type>.*?)(\s+(?P<series_num>\d+))?\)\Z')
-_quoted_title_pattern = re.compile(r'\A(?P<quote>[\'\"])(?P<value>.*)(?P=quote)\Z')
+_series_name_pattern = re.compile(r'\A(?P<name>.*?)\s+\((?P<series_type>.*?)(\s+(?P<series_num>\d+))?\)\Z')
+_series_subtitle_pattern = re.compile(r'\A\((?P<series_type>.*?)(\s+(?P<series_num>\d+))?\)\Z')
+_quoted_value_pattern = re.compile(r'\A(?P<quote>[\'\"])(?P<value>.*)(?P=quote)\Z')
 
 
 class WikipediaSeries(object):
 
     def __init__(self, html):
         soup = BeautifulSoup(html, 'html.parser')
-        properties = get_series_properties(soup)
-        self.name = properties['title']
+        properties = _get_series_properties(soup)
+        self.name = properties['name']
         self.subtitle = properties['subtitle']
         self.full_name = properties['full_name']
         self.series_type = properties.get('series_type')
         self.series_num = properties.get('series_num')
-        episodes = extract_episodes(soup)
+        episodes = _extract_episodes(soup)
         self.episodes = [Episode(program=self.name, **e) for e in episodes]
 
     def __repr__(self):
         return '{}("{}" ({} episodes))'.format(self.__class__.__name__, self.full_name, len(self.episodes))
 
     def as_json_obj(self):
-        json_object = {k: v for k, v in self.__dict__.items() if k != 'episodes' }
+        json_object = {k: v for k, v in self.__dict__.items() if k != 'episodes'}
         json_object['episodes'] = [e.__dict__ for e in self.episodes]
         return json_object
 
@@ -42,67 +44,71 @@ class WikipediaSeries(object):
 
     @classmethod
     async def async_from_url(cls, url):
-        html = await get_episode_page_html(url)
+        html = await _async_fetch_url_content(url)
         return cls(html)
 
 
-async def get_episode_page_html(url):
+async def _async_fetch_url_content(url):
     async with aiohttp.ClientSession() as session:
         async with session.get(url) as response:
-            html = await response.text()
-        return html
+            content = await response.text()
+        return content
 
 
-def get_series_properties(soup):
-    title_element = soup.select('#firstHeading')[0]
-    title = title_element.i.get_text()
-    full_name = title_element.get_text()
-    subtitle = full_name.replace(title, '', 1).strip()
-    properties = parse_program_title(subtitle, pattern=_program_subtitle_pattern)
-    properties['title'] = title
+def _get_series_properties(soup):
+    heading_element = soup.select('#firstHeading')[0]
+    name = heading_element.i.get_text()
+    full_name = heading_element.get_text()
+    subtitle = full_name.replace(name, '', 1).strip()
+    properties = _parse_series_name(subtitle, pattern=_series_subtitle_pattern)
+    properties['name'] = name
     properties['subtitle'] = subtitle
     properties['full_name'] = full_name
     return properties
 
 
-def parse_program_title(title, pattern=_program_pattern):
-    match = re.match(pattern, title)
+def _parse_series_name(name, pattern=_series_name_pattern):
+    match = re.match(pattern, name)
     if match is not None:
         properties = match.groupdict()
         series_num = properties.get('series_num', None)
         if series_num is not None:
             properties['series_num'] = int(series_num)
     else:
-        properties = {'title': title}
+        properties = {'name': name}
     return properties
 
 
-def extract_episodes(soup):
+def _extract_episodes(soup):
     episode_tables = soup.find_all('table', 'wikiepisodetable')
-    episode_table_count = len(episode_tables)
+    episodes_by_table = [_episodes_from_table(table) for table in episode_tables]
+    episodes = _flatten(episodes_by_table)
+    return episodes
 
-    table = episode_tables[0]
 
+def _flatten(list_of_lists):
+    return functools.reduce(operator.iconcat, list_of_lists, [])
+
+
+def _episodes_from_table(table):
     heading_cells = table.tbody.tr.find_all('th')
     heading_text = [tag.get_text() for tag in heading_cells]
-    column_attrs = heading_attributes(heading_text)
-
+    column_attrs = _compute_heading_attributes(heading_text)
     episode_rows = table.find_all('tr', 'vevent')
     synopses = [tag.get_text() for tag in table.find_all('td', 'description')]
     if len(episode_rows) != len(synopses):
         print("Warning: Number of episode property rows ({}) does not match number of episode description rows ({})"
               .format(len(episode_rows), len(synopses)))
-
     episodes = []
     for seq, row in enumerate(episode_rows):
         attributes = [row.th.get_text(), *[col.get_text() for col in row.find_all('td')]]
-        properties = episode_properties(attributes, column_attrs)
+        properties = _compute_episode_properties(attributes, column_attrs)
         properties['description'] = synopses[seq]
         episodes.append(properties)
-
     return episodes
 
-def episode_properties(episode_columns, attributes):
+
+def _compute_episode_properties(episode_columns, attributes):
     properties = {}
     for column, value in enumerate(episode_columns):
         value = value.replace(u'\xa0', u' ').replace(u'\u200a', u'')
@@ -110,22 +116,27 @@ def episode_properties(episode_columns, attributes):
         if attribute.startswith('number_'):
             try:
                 value = int(value)
-            except Exception as e:
+            except ValueError:
                 pass
         elif attribute == 'title':
-            match = re.match(_quoted_title_pattern, value)
-            if match is not None:
-                value = match.groupdict()['value']
+            value = _remove_matching_outer_quotes(value)
 
         properties[attribute] = value
 
     return properties
 
-def heading_attributes(headings):
+
+def _remove_matching_outer_quotes(value, value_pattern=_quoted_value_pattern):
+    match = re.match(value_pattern, value)
+    if match is not None:
+        value = match.groupdict()['value']
+    return value
+
+
+def _compute_heading_attributes(headings):
     properties = []
     for i, heading in enumerate(headings):
         text = heading.lower()
-        attribute = None
         if text.startswith('no.'):
             attribute = 'number_in_program'
         elif 'title' in text:
