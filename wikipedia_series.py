@@ -7,6 +7,10 @@ import operator
 import re
 import requests
 
+'''
+2020-02-08 Tim DiLauro
+Scrape episode data from Wikipedia "episode" pages
+'''
 
 _series_name_pattern = re.compile(r'\A(?P<name>.*?)\s+\((?P<series_type>.*?)(\s+(?P<series_num>\d+))?\)\Z')
 _series_subtitle_pattern = re.compile(r'\A\((?P<series_type>.*?)(\s+(?P<series_num>\d+))?\)\Z')

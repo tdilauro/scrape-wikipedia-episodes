@@ -1,5 +1,12 @@
 import json
 
+
+'''
+2020-02-08 Tim DiLauro
+Model for episode of a serial program, for example, an installment of a television series or miniseries
+'''
+
+
 class Episode(object):
 
     __instance_attributes = ('program', 'series', 'number_in_program', 'number_in_series', 'title',
